@@ -289,75 +289,44 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
 
       // Dispose previous controllers
       _videoController?.dispose();
-      _videoController = null;
       _chewieController?.dispose();
-      _chewieController = null;
       _youtubePlayerController?.dispose();
-      _youtubePlayerController = null;
 
-      if (!mounted) return;
-
-      // Set loading state first
-      setState(() {
-        _useYoutubePlayer = true;
-        _isInitialized = false;
-        _isLoading = true;
-        _hasError = false;
-      });
-
-      // Wait a bit for disposal
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      if (!mounted) return;
-
-      // Initialize YouTube Player Controller with better flags
+      // Initialize YouTube Player Controller
       _youtubePlayerController = YoutubePlayerController(
         initialVideoId: videoId,
         flags: const YoutubePlayerFlags(
-          autoPlay: true,
+          autoPlay: false,
           mute: false,
-          enableCaption: false,
+          enableCaption: true,
           controlsVisibleAtStart: true,
           hideControls: false,
           isLive: false,
           forceHD: false,
-          loop: false,
-          disableDragSeek: false,
-          useHybridComposition: true, // Important for Android
         ),
       );
 
-      // Add listener to track player state
-      _youtubePlayerController!.addListener(() {
-        if (mounted) {
-          final isPlaying = _youtubePlayerController!.value.isPlaying;
-          final isReady = _youtubePlayerController!.value.isReady;
-
-          debugPrint(
-              'YouTube Player State - Ready: $isReady, Playing: $isPlaying');
-
-          if (isReady && _isLoading) {
-            setState(() {
-              _isInitialized = true;
-              _isLoading = false;
-              _hasError = false;
-            });
-            debugPrint('✅ YouTube Player is now ready and initialized');
-          }
-        }
-      });
-
-      debugPrint(
-          '✅ YouTube Player controller created, waiting for ready state...');
-    } catch (e) {
-      debugPrint('❌ YouTube Player initialization failed: $e');
       if (mounted) {
         setState(() {
-          _hasError = true;
+          _useYoutubePlayer = true;
+          _isInitialized = true;
           _isLoading = false;
-          _errorMessage = 'فشل تحميل مشغل اليوتيوب: $e';
+          _hasError = false;
         });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✓ تم التبديل إلى مشغل اليوتيوب'),
+            backgroundColor: Colors.blue,
+            duration: Duration(seconds: 2),
+          ),
+        );
       }
+
+      debugPrint('✅ YouTube Player initialized successfully');
+    } catch (e) {
+      debugPrint('❌ YouTube Player initialization failed: $e');
+      rethrow;
     }
   }
 
@@ -601,12 +570,9 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
   void dispose() {
     _watermarkTimer?.cancel();
     _youtubeExplode.close();
-    _youtubePlayerController?.pause();
-    _youtubePlayerController?.dispose();
-    _chewieController?.pause();
     _chewieController?.dispose();
-    _videoController?.pause();
     _videoController?.dispose();
+    _youtubePlayerController?.dispose();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.landscapeLeft,
@@ -659,115 +625,53 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
   }
 
   Widget _buildYouTubePlayer() {
-    if (_youtubePlayerController == null) {
-      return _buildLoadingWidget();
-    }
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(0),
-      child: Stack(
-        children: [
-          // YouTube Player - Fill container with YoutubePlayerBuilder for better lifecycle
-          YoutubePlayerBuilder(
-            player: YoutubePlayer(
-              controller: _youtubePlayerController!,
-              showVideoProgressIndicator: true,
-              progressIndicatorColor: Colors.red,
-              progressColors: const ProgressBarColors(
-                playedColor: Colors.red,
-                handleColor: Colors.redAccent,
-                backgroundColor: Colors.grey,
-                bufferedColor: Colors.white70,
-              ),
-              aspectRatio: 16 / 9,
-              onReady: () {
-                debugPrint('✅ YouTube Player onReady callback triggered');
-                if (mounted && _isLoading) {
-                  setState(() {
-                    _isInitialized = true;
-                    _isLoading = false;
-                  });
-
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('✓ جاهز للتشغيل'),
-                      backgroundColor: Colors.green,
-                      duration: Duration(seconds: 2),
-                    ),
-                  );
-                }
-              },
-              onEnded: (metadata) {
-                debugPrint('Video ended');
-              },
-            ),
-            builder: (context, player) {
-              return SizedBox(
-                width: double.infinity,
-                height: double.infinity,
-                child: player,
-              );
-            },
+    return Stack(
+      children: [
+        // YouTube Player - Fill container
+        YoutubePlayer(
+          controller: _youtubePlayerController!,
+          showVideoProgressIndicator: true,
+          progressIndicatorColor: Colors.red,
+          progressColors: const ProgressBarColors(
+            playedColor: Colors.red,
+            handleColor: Colors.redAccent,
           ),
+          onReady: () {
+            debugPrint('YouTube Player is ready');
+          },
+          onEnded: (metadata) {
+            debugPrint('Video ended');
+          },
+        ),
 
-          // Show loading overlay while initializing
-          if (_isLoading)
-            Positioned.fill(
-              child: Container(
-                color: Colors.black.withOpacity(0.7),
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const CircularProgressIndicator(
-                        color: Colors.red,
-                        strokeWidth: 3,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'جاري تحميل الفيديو...',
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.8),
-                          fontSize: 14,
-                        ),
-                      ),
-                    ],
-                  ),
+        // Watermark
+        AnimatedPositioned(
+          duration: const Duration(seconds: 1),
+          curve: Curves.easeInOut,
+          left: _watermarkPositionX == 0.0
+              ? 10
+              : (MediaQuery.of(context).size.width / 2) - 50,
+          top: _watermarkPositionY == 0.0 ? 10 : (250 / 2) - 20,
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.4),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                widget.name,
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.white.withOpacity(0.7),
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
                 ),
               ),
             ),
-
-          // Watermark
-          if (!_isLoading)
-            AnimatedPositioned(
-              duration: const Duration(seconds: 1),
-              curve: Curves.easeInOut,
-              left: _watermarkPositionX == 0.0
-                  ? 10
-                  : (MediaQuery.of(context).size.width / 2) - 50,
-              top: _watermarkPositionY == 0.0 ? 10 : (250 / 2) - 20,
-              child: IgnorePointer(
-                child: Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.4),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    widget.name,
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.white.withOpacity(0.7),
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+          ),
+        ),
+      ],
     );
   }
 
