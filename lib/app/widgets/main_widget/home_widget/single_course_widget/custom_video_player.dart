@@ -5,10 +5,8 @@ import 'package:chewie/chewie.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:headset_connection_event/headset_event.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
-import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 
 class PodVideoPlayerDev extends StatefulWidget {
   final String type;
@@ -29,14 +27,9 @@ class PodVideoPlayerDev extends StatefulWidget {
 }
 
 class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
-  // For video player (using video_player + youtube_explode_dart)
   VideoPlayerController? _videoController;
   ChewieController? _chewieController;
   final YoutubeExplode _youtubeExplode = YoutubeExplode();
-
-  // For YouTube Player Flutter (fallback for embedding disabled videos)
-  YoutubePlayerController? _youtubePlayerController;
-  bool _useYoutubePlayer = false;
 
   double _watermarkPositionX = 0.0;
   double _watermarkPositionY = 0.0;
@@ -45,11 +38,8 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
   bool _hasError = false;
   String _errorMessage = '';
   bool _isLoading = true;
-  bool _isYouTube = false;
-  String? _youtubeVideoId;
   String? _videoTitle;
 
-  // Quality settings
   final bool _applyBlurEffect = false;
   final double _blurSigma = 0.0;
 
@@ -60,10 +50,8 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
   void initState() {
     super.initState();
 
-    // Request Permissions (Required for Android 12)
     _headsetPlugin.requestPermission();
 
-    // Check if headset is plugged
     _headsetPlugin.getCurrentState.then((val) {
       if (mounted) {
         setState(() {
@@ -73,7 +61,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
       }
     });
 
-    // Detect the moment headset is plugged or unplugged
     _headsetPlugin.setListener((val) {
       if (mounted) {
         setState(() {
@@ -83,10 +70,8 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
       }
     });
 
-    // Initialize the video player
     _initializePlayer();
 
-    // Setup Timer to move watermark every 3 seconds
     _watermarkTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (mounted) {
         setState(() {
@@ -111,27 +96,32 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
       _isLoading = true;
       _hasError = false;
       _errorMessage = '';
-      _useYoutubePlayer = false;
     });
 
     try {
       String videoUrl = widget.url.trim();
 
-      // Validate URL
       if (videoUrl.isEmpty) {
         throw Exception('Video URL is empty');
       }
 
-      // Check if it's a YouTube URL
-      _isYouTube = _isYoutubeUrl(videoUrl);
+      String? streamUrl;
 
-      if (_isYouTube) {
-        debugPrint('YouTube URL detected: $videoUrl');
-        await _initializeYouTubeVideoPlayer(videoUrl);
+      // Check if it's a YouTube URL
+      if (_isYoutubeUrl(videoUrl)) {
+        debugPrint('🎬 YouTube URL detected: $videoUrl');
+        streamUrl = await _extractYouTubeStreamUrl(videoUrl);
       } else {
-        debugPrint('Direct URL detected: $videoUrl');
-        await _initializeVideoPlayer(videoUrl);
+        // Direct URL - استخدمها مباشرة
+        debugPrint('🎬 Direct URL detected: $videoUrl');
+        streamUrl = videoUrl;
       }
+
+      if (streamUrl == null || streamUrl.isEmpty) {
+        throw Exception('فشل في الحصول على رابط التشغيل');
+      }
+
+      await _initializeVideoPlayer(streamUrl);
 
       if (mounted) {
         setState(() {
@@ -141,7 +131,7 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
         });
       }
     } catch (e, stackTrace) {
-      debugPrint('Error initializing player: $e');
+      debugPrint('❌ Error initializing player: $e');
       debugPrint('Stack trace: $stackTrace');
 
       if (mounted) {
@@ -154,20 +144,17 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
     }
   }
 
-  Future<void> _initializeYouTubeVideoPlayer(String url) async {
+  Future<String?> _extractYouTubeStreamUrl(String url) async {
     try {
-      // Extract video ID from URL
       final videoId = _extractYouTubeId(url);
 
       if (videoId == null || videoId.isEmpty) {
-        throw Exception(
-            'رابط اليوتيوب غير صحيح. تأكد من الرابط وحاول مرة أخرى.');
+        throw Exception('رابط اليوتيوب غير صحيح');
       }
 
       debugPrint('🎬 Extracted YouTube ID: $videoId');
-      _youtubeVideoId = videoId;
 
-      // ✅ Get video info first
+      // Get video info
       Video? video;
       try {
         video = await _youtubeExplode.videos.get(videoId);
@@ -177,10 +164,9 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
         debugPrint('✅ Video title: ${video.title}');
       } catch (e) {
         debugPrint('⚠️ Could not fetch video info: $e');
-        // Continue anyway, we'll try to get the stream
       }
 
-      // ✅ Get stream manifest with better error handling
+      // Get stream manifest
       StreamManifest manifest;
       try {
         manifest =
@@ -188,22 +174,10 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
         debugPrint('✅ Manifest fetched successfully');
       } catch (e) {
         debugPrint('❌ Failed to get manifest: $e');
-
-        // Check if it's an embedding disabled error
-        if (e.toString().contains('unplayable') ||
-            e.toString().contains('embedding') ||
-            e.toString().contains('Video is unavailable') ||
-            e.toString().contains('not available')) {
-          debugPrint('🔄 Switching to YouTube Player (embedding disabled)');
-          await _initializeYouTubePlayerFallback(videoId);
-          return;
-        }
-
         throw Exception(
             'فشل في جلب معلومات الفيديو. قد يكون الفيديو غير متاح أو محمي.');
       }
 
-      // ✅ Try different stream types in order of preference
       String? streamUrl;
 
       // 1. Try muxed streams first (best quality with audio+video)
@@ -212,120 +186,39 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
           final muxedStream = manifest.muxed.withHighestBitrate();
           streamUrl = muxedStream.url.toString();
           debugPrint('✅ Using muxed stream: ${muxedStream.qualityLabel}');
+          return streamUrl;
         }
       } catch (e) {
         debugPrint('⚠️ Muxed stream failed: $e');
       }
 
-      // 2. If muxed failed, try video-only streams
-      if (streamUrl == null) {
-        try {
-          if (manifest.videoOnly.isNotEmpty) {
-            final videoStream = manifest.videoOnly.withHighestBitrate();
-            streamUrl = videoStream.url.toString();
-            debugPrint(
-                '⚠️ Using video-only stream (no audio): ${videoStream.qualityLabel}');
-          }
-        } catch (e) {
-          debugPrint('⚠️ Video-only stream failed: $e');
+      // 2. Try video-only streams + audio
+      try {
+        if (manifest.videoOnly.isNotEmpty && manifest.audioOnly.isNotEmpty) {
+          final videoStream = manifest.videoOnly.withHighestBitrate();
+          streamUrl = videoStream.url.toString();
+          debugPrint('⚠️ Using video-only stream: ${videoStream.qualityLabel}');
+          return streamUrl;
         }
+      } catch (e) {
+        debugPrint('⚠️ Video-only stream failed: $e');
       }
 
-      // 3. If all failed, try audio-only as last resort
-      if (streamUrl == null) {
-        try {
-          if (manifest.audioOnly.isNotEmpty) {
-            final audioStream = manifest.audioOnly.withHighestBitrate();
-            streamUrl = audioStream.url.toString();
-            debugPrint('⚠️ Using audio-only stream: ${audioStream.bitrate}');
-          }
-        } catch (e) {
-          debugPrint('❌ Audio-only stream failed: $e');
+      // 3. Try audio-only as last resort
+      try {
+        if (manifest.audioOnly.isNotEmpty) {
+          final audioStream = manifest.audioOnly.withHighestBitrate();
+          streamUrl = audioStream.url.toString();
+          debugPrint('⚠️ Using audio-only stream: ${audioStream.bitrate}');
+          return streamUrl;
         }
+      } catch (e) {
+        debugPrint('❌ Audio-only stream failed: $e');
       }
 
-      if (streamUrl == null) {
-        debugPrint('🔄 No stream available, switching to YouTube Player');
-        await _initializeYouTubePlayerFallback(videoId);
-        return;
-      }
-
-      debugPrint('🎥 Final stream URL: $streamUrl');
-
-      // Initialize video player with the stream URL
-      await _initializeVideoPlayer(streamUrl);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('✓ تم تحميل: ${_videoTitle ?? "فيديو يوتيوب"}'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e, stackTrace) {
-      debugPrint('❌ YouTube initialization error: $e');
-      debugPrint('Stack trace: $stackTrace');
-
-      // Last resort: try YouTube Player
-      if (_youtubeVideoId != null) {
-        debugPrint('🔄 Final fallback to YouTube Player');
-        try {
-          await _initializeYouTubePlayerFallback(_youtubeVideoId!);
-          return;
-        } catch (fallbackError) {
-          debugPrint('❌ YouTube Player fallback also failed: $fallbackError');
-        }
-      }
-
-      rethrow;
-    }
-  }
-
-  Future<void> _initializeYouTubePlayerFallback(String videoId) async {
-    try {
-      debugPrint('📺 Initializing YouTube Player for video: $videoId');
-
-      // Dispose previous controllers
-      _videoController?.dispose();
-      _chewieController?.dispose();
-      _youtubePlayerController?.dispose();
-
-      // Initialize YouTube Player Controller
-      _youtubePlayerController = YoutubePlayerController(
-        initialVideoId: videoId,
-        flags: const YoutubePlayerFlags(
-          autoPlay: false,
-          mute: false,
-          enableCaption: true,
-          controlsVisibleAtStart: true,
-          hideControls: false,
-          isLive: false,
-          forceHD: false,
-        ),
-      );
-
-      if (mounted) {
-        setState(() {
-          _useYoutubePlayer = true;
-          _isInitialized = true;
-          _isLoading = false;
-          _hasError = false;
-        });
-
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('✓ تم التبديل إلى مشغل اليوتيوب'),
-            backgroundColor: Colors.blue,
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-
-      debugPrint('✅ YouTube Player initialized successfully');
+      throw Exception('لم يتم العثور على stream متاح للتشغيل');
     } catch (e) {
-      debugPrint('❌ YouTube Player initialization failed: $e');
+      debugPrint('❌ YouTube extraction error: $e');
       rethrow;
     }
   }
@@ -334,12 +227,9 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
     try {
       debugPrint('🎬 Initializing video player with URL: $url');
 
-      // Dispose previous controller if exists
       _videoController?.dispose();
       _chewieController?.dispose();
-      _youtubePlayerController?.dispose();
 
-      // Initialize video player
       _videoController = VideoPlayerController.networkUrl(
         Uri.parse(url),
         httpHeaders: {
@@ -357,7 +247,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
 
       debugPrint('✅ Video player initialized successfully');
 
-      // Initialize Chewie controller for better UI controls
       _chewieController = ChewieController(
         videoPlayerController: _videoController!,
         autoPlay: false,
@@ -413,10 +302,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
         },
       );
 
-      setState(() {
-        _useYoutubePlayer = false;
-      });
-
       debugPrint('✅ Chewie controller initialized successfully');
     } catch (e) {
       debugPrint('❌ Video player initialization error: $e');
@@ -438,30 +323,15 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
 
   String? _extractYouTubeId(String url) {
     try {
-      // Clean the URL
       url = url.trim();
 
-      // Handle different YouTube URL formats
       final patterns = [
-        // Standard watch URL: https://www.youtube.com/watch?v=VIDEO_ID
         RegExp(r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})'),
-
-        // Short URL: https://youtu.be/VIDEO_ID
         RegExp(r'(?:youtu\.be\/)([a-zA-Z0-9_-]{11})'),
-
-        // Embed URL: https://www.youtube.com/embed/VIDEO_ID
         RegExp(r'(?:youtube\.com\/embed\/)([a-zA-Z0-9_-]{11})'),
-
-        // Shorts URL: https://www.youtube.com/shorts/VIDEO_ID
         RegExp(r'(?:youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})'),
-
-        // V parameter URL: https://www.youtube.com/v/VIDEO_ID
         RegExp(r'(?:youtube\.com\/v\/)([a-zA-Z0-9_-]{11})'),
-
-        // Watch URL with additional parameters
         RegExp(r'(?:youtube\.com\/watch\?.*v=)([a-zA-Z0-9_-]{11})'),
-
-        // Mobile URL
         RegExp(r'(?:m\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})'),
       ];
 
@@ -485,48 +355,11 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
     }
   }
 
-  Future<void> _openYouTubeVideo() async {
-    if (_youtubeVideoId == null) return;
-
-    final url = 'https://www.youtube.com/watch?v=$_youtubeVideoId';
-    final uri = Uri.parse(url);
-
-    try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(
-          uri,
-          mode: LaunchMode.externalApplication,
-        );
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('لا يمكن فتح الفيديو'),
-              backgroundColor: Colors.red,
-            ),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('Error opening YouTube video: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('خطأ في فتح الفيديو: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
   String _formatErrorMessage(String error) {
-    // Clean up error messages
     if (error.contains('Exception:')) {
       error = error.split('Exception:').last.trim();
     }
 
-    // Check for specific error messages
     if (error.contains('not available') ||
         error.contains('unavailable') ||
         error.contains('غير متاح')) {
@@ -558,7 +391,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
           'قد يكون الفيديو محمي أو غير متاح في منطقتك.';
     }
 
-    // Truncate long errors
     if (error.length > 100) {
       return '${error.substring(0, 100)}...';
     }
@@ -572,7 +404,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
     _youtubeExplode.close();
     _chewieController?.dispose();
     _videoController?.dispose();
-    _youtubePlayerController?.dispose();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
       DeviceOrientation.landscapeLeft,
@@ -613,79 +444,21 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
       return _buildLoadingWidget();
     }
 
-    if (_isInitialized) {
-      if (_useYoutubePlayer && _youtubePlayerController != null) {
-        return _buildYouTubePlayer();
-      } else if (_chewieController != null) {
-        return _buildVideoPlayer();
-      }
+    if (_isInitialized && _chewieController != null) {
+      return _buildVideoPlayer();
     }
 
     return _buildLoadingWidget();
   }
 
-  Widget _buildYouTubePlayer() {
-    return Stack(
-      children: [
-        // YouTube Player - Fill container
-        YoutubePlayer(
-          controller: _youtubePlayerController!,
-          showVideoProgressIndicator: true,
-          progressIndicatorColor: Colors.red,
-          progressColors: const ProgressBarColors(
-            playedColor: Colors.red,
-            handleColor: Colors.redAccent,
-          ),
-          onReady: () {
-            debugPrint('YouTube Player is ready');
-          },
-          onEnded: (metadata) {
-            debugPrint('Video ended');
-          },
-        ),
-
-        // Watermark
-        AnimatedPositioned(
-          duration: const Duration(seconds: 1),
-          curve: Curves.easeInOut,
-          left: _watermarkPositionX == 0.0
-              ? 10
-              : (MediaQuery.of(context).size.width / 2) - 50,
-          top: _watermarkPositionY == 0.0 ? 10 : (250 / 2) - 20,
-          child: IgnorePointer(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.4),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                widget.name,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: Colors.white.withOpacity(0.7),
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildVideoPlayer() {
     return Stack(
       children: [
-        // Video Player - Fill container
         SizedBox(
           width: double.infinity,
           height: double.infinity,
           child: Chewie(controller: _chewieController!),
         ),
-
-        // Blur effect overlay (if quality is low)
         if (_applyBlurEffect)
           Positioned.fill(
             child: ClipRect(
@@ -698,8 +471,6 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
               ),
             ),
           ),
-
-        // Watermark
         AnimatedPositioned(
           duration: const Duration(seconds: 1),
           curve: Curves.easeInOut,
@@ -803,42 +574,20 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
                 overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 24),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: () {
-                      _initializePlayer();
-                    },
-                    icon: const Icon(Icons.refresh, size: 18),
-                    label: const Text('إعادة المحاولة'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
-                    ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  _initializePlayer();
+                },
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('إعادة المحاولة'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 20,
+                    vertical: 12,
                   ),
-                  // Add YouTube button if it's a YouTube video
-                  if (_isYouTube && _youtubeVideoId != null) ...{
-                    const SizedBox(width: 12),
-                    ElevatedButton.icon(
-                      onPressed: _openYouTubeVideo,
-                      icon: const Icon(Icons.play_circle_outline, size: 18),
-                      label: const Text('فتح في يوتيوب'),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red.shade700,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 12,
-                        ),
-                      ),
-                    ),
-                  },
-                ],
+                ),
               ),
             ],
           ),
