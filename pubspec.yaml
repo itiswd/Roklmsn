@@ -103,6 +103,7 @@ dependencies:
   youtube_explode_dart: ^2.5.2
   youtube_player_iframe: ^5.2.2
   firebase_core: ^4.2.1
+  youtube_player_flutter: ^9.0.4
 
 dependency_overrides:
   flutter_widget_from_html_core: ^0.15.2
