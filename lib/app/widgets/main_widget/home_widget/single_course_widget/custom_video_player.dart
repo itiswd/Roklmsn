@@ -325,6 +325,21 @@ class _VimeoVideoPlayerState extends State<PodVideoPlayerDev> {
     try {
       url = url.trim();
 
+      // Remove query parameters after video ID for youtu.be URLs
+      if (url.contains('youtu.be/')) {
+        final uri = Uri.parse(url);
+        final path = uri.path.replaceFirst('/', '');
+        // Extract only the video ID (11 characters) before any additional parameters
+        if (path.length >= 11) {
+          final videoId = path.substring(0, 11);
+          if (RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(videoId)) {
+            debugPrint(
+                'Successfully extracted YouTube ID: $videoId from youtu.be URL');
+            return videoId;
+          }
+        }
+      }
+
       final patterns = [
         RegExp(r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})'),
         RegExp(r'(?:youtu\.be\/)([a-zA-Z0-9_-]{11})'),
